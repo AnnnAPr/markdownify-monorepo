@@ -9,9 +9,9 @@ import { ScraperService } from './services/scraper.service.js'
 // Rules: 30 requests per 15-minute window AND 200 requests per day per IP
 // ---------------------------------------------------------------------------
 const RATE_LIMIT_BURST_MAX = 30
-const RATE_LIMIT_BURST_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
+const RATE_LIMIT_BURST_WINDOW = 15 * 60 * 1000 // 15 minutes
 const RATE_LIMIT_DAILY_MAX = 200
-const RATE_LIMIT_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000 // 24 hours
+const RATE_LIMIT_DAILY_WINDOW = 24 * 60 * 60 * 1000 // 24 hours
 
 interface RateEntry {
   // Burst window (15 min)
@@ -32,6 +32,8 @@ function checkRateLimit(ip: string): {
   const now = Date.now()
   let entry = rateLimitMap.get(ip)
 
+  console.log('entry: ', entry)
+
   // First request from this IP
   if (!entry) {
     rateLimitMap.set(ip, {
@@ -40,37 +42,37 @@ function checkRateLimit(ip: string): {
       dailyCount: 1,
       dailyWindowStart: now,
     })
-    return { allowed: true, resetInMs: RATE_LIMIT_BURST_WINDOW_MS }
+    return { allowed: true, resetInMs: RATE_LIMIT_BURST_WINDOW }
   }
 
   // Reset burst window if expired
-  if (now - entry.burstWindowStart > RATE_LIMIT_BURST_WINDOW_MS) {
+  if (now - entry.burstWindowStart > RATE_LIMIT_BURST_WINDOW) {
     entry.burstCount = 0
     entry.burstWindowStart = now
   }
 
   // Reset daily window if expired
-  if (now - entry.dailyWindowStart > RATE_LIMIT_DAILY_WINDOW_MS) {
+  if (now - entry.dailyWindowStart > RATE_LIMIT_DAILY_WINDOW) {
     entry.dailyCount = 0
     entry.dailyWindowStart = now
   }
 
   // Check daily cap first (stricter — blocks for longer)
   if (entry.dailyCount >= RATE_LIMIT_DAILY_MAX) {
-    const resetInMs = RATE_LIMIT_DAILY_WINDOW_MS - (now - entry.dailyWindowStart)
+    const resetInMs = RATE_LIMIT_DAILY_WINDOW - (now - entry.dailyWindowStart)
     return { allowed: false, reason: 'daily', resetInMs }
   }
 
   // Check burst cap
   if (entry.burstCount >= RATE_LIMIT_BURST_MAX) {
-    const resetInMs = RATE_LIMIT_BURST_WINDOW_MS - (now - entry.burstWindowStart)
+    const resetInMs = RATE_LIMIT_BURST_WINDOW - (now - entry.burstWindowStart)
     return { allowed: false, reason: 'burst', resetInMs }
   }
 
   // Allow — increment both counters
   entry.burstCount++
   entry.dailyCount++
-  return { allowed: true, resetInMs: RATE_LIMIT_BURST_WINDOW_MS - (now - entry.burstWindowStart) }
+  return { allowed: true, resetInMs: RATE_LIMIT_BURST_WINDOW - (now - entry.burstWindowStart) }
 }
 
 const app = new Hono()
@@ -103,16 +105,9 @@ app.post('/v1/scrape', async (c) => {
     const ip =
       c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? connInfo.remote.address ?? 'unknown'
 
-    // If IP cannot be determined, log a warning and fall through to a shared fallback bucket.
-    // This ensures unknown-IP requests are still rate-limited (prevents abuse),
-    // while making the issue visible in logs so misconfigured proxies can be fixed.
-    if (ip === 'unknown') {
-      console.warn(
-        '[RateLimit] Could not determine client IP — applying shared fallback rate limit bucket.'
-      )
-    }
+    console.log('ip: ', ip)
 
-    // Check per-IP rate limit (or shared "unknown" bucket as fallback)
+    // Check per-IP rate limit
     const rateLimit = checkRateLimit(ip)
     if (!rateLimit.allowed) {
       const resetSecs = Math.ceil(rateLimit.resetInMs / 1000)
@@ -168,7 +163,7 @@ app.post('/v1/scrape', async (c) => {
   }
 })
 
-serve(
+const server = serve(
   {
     fetch: app.fetch,
     port: 3001,
@@ -177,3 +172,21 @@ serve(
     console.log(`Server is running on http://localhost:${info.port}`)
   }
 )
+
+// Graceful shutdown handlers to prevent EADDRINUSE errors on file changes/restarts
+const shutdown = () => {
+  console.log('\n[Server] Shutting down gracefully...')
+  server.close(() => {
+    console.log('[Server] Closed out remaining connections.')
+    process.exit(0)
+  })
+
+  // Force close if taking too long
+  setTimeout(() => {
+    console.error('[Server] Could not close connections in time, forcefully shutting down')
+    process.exit(1)
+  }, 3000)
+}
+
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)
