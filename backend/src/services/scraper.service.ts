@@ -163,13 +163,20 @@ export class ScraperService {
     const dom = new JSDOM(rawHtml, { url })
     const document = dom.window.document
 
+    console.log('dom: ', dom)
+    console.log('document: ', document)
+
     // Remove scripts, styles, iframes, and other non-article nodes
     const removeElements = document.querySelectorAll('script, style, iframe, noscript')
     removeElements.forEach((el) => el.remove())
 
+    console.log('document: ', document)
+
     // Extract main content with Mozilla Readability
     const reader = new Readability(document)
     const article = reader.parse()
+
+    console.log('article: ', article)
 
     if (!article) {
       throw new Error(
@@ -179,6 +186,8 @@ export class ScraperService {
 
     // Convert content to Markdown using Turndown
     const markdown = this.turndownService.turndown(article.content || '').trim()
+
+    console.log('markdown: ', markdown)
 
     if (!markdown) {
       throw new Error('Extracted content resulted in an empty Markdown string.')
@@ -213,6 +222,8 @@ export class ScraperService {
 
     // Store in cache
     this.cache.set(url, { result, expiresAt: Date.now() + CACHE_DURATION_MINUTES })
+
+    console.log('result: ', result)
 
     return result
   }
