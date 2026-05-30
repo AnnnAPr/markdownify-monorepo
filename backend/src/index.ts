@@ -24,6 +24,47 @@ interface RateEntry {
 
 const rateLimitMap = new Map<string, RateEntry>()
 
+function getRateLimitInfo(ip: string) {
+  const now = Date.now()
+  const entry = rateLimitMap.get(ip)
+
+  if (!entry) {
+    return {
+      burstLimit: RATE_LIMIT_BURST_MAX,
+      burstRemaining: RATE_LIMIT_BURST_MAX,
+      burstResetInMs: RATE_LIMIT_BURST_WINDOW,
+      dailyLimit: RATE_LIMIT_DAILY_MAX,
+      dailyRemaining: RATE_LIMIT_DAILY_MAX,
+      dailyResetInMs: RATE_LIMIT_DAILY_WINDOW,
+    }
+  }
+
+  // Calculate current effective burst count & reset time
+  let burstCount = entry.burstCount
+  let burstResetInMs = RATE_LIMIT_BURST_WINDOW - (now - entry.burstWindowStart)
+  if (now - entry.burstWindowStart > RATE_LIMIT_BURST_WINDOW) {
+    burstCount = 0
+    burstResetInMs = RATE_LIMIT_BURST_WINDOW
+  }
+
+  // Calculate current effective daily count & reset time
+  let dailyCount = entry.dailyCount
+  let dailyResetInMs = RATE_LIMIT_DAILY_WINDOW - (now - entry.dailyWindowStart)
+  if (now - entry.dailyWindowStart > RATE_LIMIT_DAILY_WINDOW) {
+    dailyCount = 0
+    dailyResetInMs = RATE_LIMIT_DAILY_WINDOW
+  }
+
+  return {
+    burstLimit: RATE_LIMIT_BURST_MAX,
+    burstRemaining: Math.max(0, RATE_LIMIT_BURST_MAX - burstCount),
+    burstResetInMs: Math.max(0, burstResetInMs),
+    dailyLimit: RATE_LIMIT_DAILY_MAX,
+    dailyRemaining: Math.max(0, RATE_LIMIT_DAILY_MAX - dailyCount),
+    dailyResetInMs: Math.max(0, dailyResetInMs),
+  }
+}
+
 function checkRateLimit(ip: string): {
   allowed: boolean
   reason?: 'burst' | 'daily'
@@ -98,13 +139,23 @@ app.get('/', (c) => {
   })
 })
 
-app.post('/v1/scrape', async (c) => {
-  try {
-    // Extract client IP (socket address, with x-forwarded-for fallback for proxies)
-    const connInfo = getConnInfo(c)
-    const ip =
-      c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? connInfo.remote.address ?? 'unknown'
+app.get('/v1/rate-limit', (c) => {
+  const connInfo = getConnInfo(c)
+  const ip =
+    c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? connInfo.remote.address ?? 'unknown'
+  const limitInfo = getRateLimitInfo(ip)
+  return c.json({
+    status: 'success',
+    rateLimit: limitInfo,
+  })
+})
 
+app.post('/v1/scrape', async (c) => {
+  const connInfo = getConnInfo(c)
+  const ip =
+    c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? connInfo.remote.address ?? 'unknown'
+
+  try {
     console.log('ip: ', ip)
 
     // Check per-IP rate limit
@@ -112,12 +163,14 @@ app.post('/v1/scrape', async (c) => {
     if (!rateLimit.allowed) {
       const resetSecs = Math.ceil(rateLimit.resetInMs / 1000)
       const isDaily = rateLimit.reason === 'daily'
+      const limitInfo = getRateLimitInfo(ip)
       return c.json(
         {
           status: 'error',
           message: isDaily
             ? `Daily limit reached. You can make ${RATE_LIMIT_DAILY_MAX} requests per day. Try again in ${resetSecs}s.`
             : `Rate limit exceeded. You can make ${RATE_LIMIT_BURST_MAX} requests per 15 minutes. Try again in ${resetSecs}s.`,
+          rateLimit: limitInfo,
         },
         429
       )
@@ -127,10 +180,12 @@ app.post('/v1/scrape', async (c) => {
     const { url } = body
 
     if (!url || typeof url !== 'string') {
+      const limitInfo = getRateLimitInfo(ip)
       return c.json(
         {
           status: 'error',
           message: 'Invalid request: "url" parameter is required and must be a string.',
+          rateLimit: limitInfo,
         },
         400
       )
@@ -140,23 +195,31 @@ app.post('/v1/scrape', async (c) => {
     try {
       scraperService.validateUrl(url)
     } catch (e: any) {
+      const limitInfo = getRateLimitInfo(ip)
       return c.json(
         {
           status: 'error',
           message: `Invalid request: ${e.message}`,
+          rateLimit: limitInfo,
         },
         400
       )
     }
 
     const result = await scraperService.scrape(url)
-    return c.json(result)
+    const limitInfo = getRateLimitInfo(ip)
+    return c.json({
+      ...result,
+      rateLimit: limitInfo,
+    })
   } catch (error: any) {
     console.error(`[Scrape Error] ${error.message}`)
+    const limitInfo = getRateLimitInfo(ip)
     return c.json(
       {
         status: 'error',
         message: error.message || 'An unexpected error occurred during scraping.',
+        rateLimit: limitInfo,
       },
       500
     )
@@ -175,17 +238,9 @@ const server = serve(
 
 // Graceful shutdown handlers to prevent EADDRINUSE errors on file changes/restarts
 const shutdown = () => {
-  console.log('\n[Server] Shutting down gracefully...')
-  server.close(() => {
-    console.log('[Server] Closed out remaining connections.')
-    process.exit(0)
-  })
-
-  // Force close if taking too long
-  setTimeout(() => {
-    console.error('[Server] Could not close connections in time, forcefully shutting down')
-    process.exit(1)
-  }, 3000)
+  console.log('\n[Server] Shutting down...')
+  server.close()
+  process.exit(0)
 }
 
 process.on('SIGINT', shutdown)

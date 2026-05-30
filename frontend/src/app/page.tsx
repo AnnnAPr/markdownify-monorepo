@@ -1,14 +1,32 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 export default function Home() {
   const [url, setUrl] = useState('')
   const [markdown, setMarkdown] = useState('')
   const [stats, setStats] = useState<any>(null)
+  const [rateLimit, setRateLimit] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    const fetchRateLimit = async () => {
+      try {
+        const res = await fetch(`http://localhost:3001/v1/rate-limit`)
+        if (res.ok) {
+          const data = await res.json()
+          if (data.rateLimit) {
+            setRateLimit(data.rateLimit)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch rate limit:', err)
+      }
+    }
+    fetchRateLimit()
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -29,6 +47,9 @@ export default function Home() {
 
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}))
+        if (errData.rateLimit) {
+          setRateLimit(errData.rateLimit)
+        }
         throw new Error(errData.message || 'Failed to fetch markdown')
       }
 
@@ -36,6 +57,9 @@ export default function Home() {
       // The backend returns the scraped markdown in data.markdown
       setMarkdown(data.markdown || data.content || JSON.stringify(data, null, 2))
       setStats(data)
+      if (data.rateLimit) {
+        setRateLimit(data.rateLimit)
+      }
     } catch (err: any) {
       setError(err.message || 'Something went wrong')
     } finally {
@@ -184,6 +208,110 @@ export default function Home() {
               {/* Stats Column */}
               {stats && stats.rawTokenCount !== undefined && (
                 <div className="w-full xl:w-80 space-y-6 xl:pt-[44px]">
+                  {/* Rate Limits Card */}
+                  {rateLimit && (
+                    <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 space-y-4">
+                      <h3 className="text-lg font-medium text-white">Rate Limits</h3>
+                      <div className="space-y-4">
+                        {/* 15-Minute Limit */}
+                        <div>
+                          <div className="flex justify-between items-center mb-1 text-sm">
+                            <span className="text-neutral-400">15-Min Limit</span>
+                            <span
+                              className={`font-semibold ${
+                                rateLimit.burstRemaining === 0
+                                  ? 'text-red-400'
+                                  : rateLimit.burstRemaining <= 5
+                                    ? 'text-yellow-400'
+                                    : 'text-blue-400'
+                              }`}
+                            >
+                              {rateLimit.burstRemaining} / {rateLimit.burstLimit}
+                            </span>
+                          </div>
+                          {/* Progress bar */}
+                          <div className="w-full bg-neutral-800 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-500 ${
+                                rateLimit.burstRemaining === 0
+                                  ? 'bg-red-500'
+                                  : rateLimit.burstRemaining <= 5
+                                    ? 'bg-yellow-500'
+                                    : 'bg-blue-500'
+                              }`}
+                              style={{
+                                width: `${(rateLimit.burstRemaining / rateLimit.burstLimit) * 100}%`,
+                              }}
+                            />
+                          </div>
+                          {rateLimit.burstRemaining === 0 && rateLimit.burstResetInMs > 0 && (
+                            <div className="text-xs text-red-400/80 mt-1.5 flex items-center gap-1.5">
+                              <svg
+                                className="w-3.5 h-3.5 animate-spin"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                              >
+                                <circle
+                                  className="opacity-25"
+                                  cx="12"
+                                  cy="12"
+                                  r="10"
+                                  stroke="currentColor"
+                                  strokeWidth="4"
+                                />
+                                <path
+                                  className="opacity-75"
+                                  fill="currentColor"
+                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                />
+                              </svg>
+                              Resets in {Math.ceil(rateLimit.burstResetInMs / 1000)}s
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Daily Limit */}
+                        <div>
+                          <div className="flex justify-between items-center mb-1 text-sm">
+                            <span className="text-neutral-400">Daily Limit</span>
+                            <span
+                              className={`font-semibold ${
+                                rateLimit.dailyRemaining === 0
+                                  ? 'text-red-400'
+                                  : rateLimit.dailyRemaining <= 20
+                                    ? 'text-yellow-400'
+                                    : 'text-green-400'
+                              }`}
+                            >
+                              {rateLimit.dailyRemaining} / {rateLimit.dailyLimit}
+                            </span>
+                          </div>
+                          {/* Progress bar */}
+                          <div className="w-full bg-neutral-800 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-500 ${
+                                rateLimit.dailyRemaining === 0
+                                  ? 'bg-red-500'
+                                  : rateLimit.dailyRemaining <= 20
+                                    ? 'bg-yellow-500'
+                                    : 'bg-green-500'
+                              }`}
+                              style={{
+                                width: `${(rateLimit.dailyRemaining / rateLimit.dailyLimit) * 100}%`,
+                              }}
+                            />
+                          </div>
+                          {rateLimit.dailyRemaining === 0 && rateLimit.dailyResetInMs > 0 && (
+                            <div className="text-xs text-red-400/80 mt-1.5">
+                              Resets in {Math.ceil(rateLimit.dailyResetInMs / (60 * 60 * 1000))}h
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Statistics Card */}
                   <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6">
                     <h3 className="text-lg font-medium text-white mb-4">Statistics</h3>
                     <div className="space-y-4">
