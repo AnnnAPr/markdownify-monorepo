@@ -18,10 +18,19 @@ export interface ScrapeResult {
   tokensSavedEstimate: number
   savingsPercent: number
   markdown: string
+  cached?: boolean
 }
+
+interface CacheEntry {
+  result: ScrapeResult
+  expiresAt: number
+}
+
+const CACHE_DURATION_MINUTES = 10 * 60 * 1000 // 10 minutes
 
 export class ScraperService {
   private turndownService: TurndownService
+  private cache = new Map<string, CacheEntry>()
 
   constructor() {
     this.turndownService = new TurndownService({
@@ -37,6 +46,47 @@ export class ScraperService {
       filter: ['img'],
       replacement: () => '',
     })
+  }
+
+  /**
+   * Validates a URL for security risks before making any network requests.
+   * Blocks private/internal IPs (SSRF protection) and non-HTTP protocols.
+   */
+  validateUrl(urlString: string): void {
+    let parsedUrl: URL
+    try {
+      parsedUrl = new URL(urlString)
+    } catch (_) {
+      throw new Error('Invalid URL structure.')
+    }
+
+    // Only allow http and https protocols
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      throw new Error(
+        `Unsupported protocol "${parsedUrl.protocol}". Only http: and https: are allowed.`
+      )
+    }
+
+    // Block private/internal IPs and localhost (SSRF protection)
+    const hostname = parsedUrl.hostname.toLowerCase()
+    const blockedPatterns = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']
+
+    if (blockedPatterns.includes(hostname)) {
+      throw new Error('URLs pointing to localhost or loopback addresses are not allowed.')
+    }
+
+    // Block private IP ranges: 10.x.x.x, 192.168.x.x, 172.16-31.x.x
+    const privateIpPatterns = [
+      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
+      /^192\.168\.\d{1,3}\.\d{1,3}$/,
+      /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/,
+      /^169\.254\.\d{1,3}\.\d{1,3}$/, // Link-local
+      /^0\.0\.0\.0$/,
+    ]
+
+    if (privateIpPatterns.some((pattern) => pattern.test(hostname))) {
+      throw new Error('URLs pointing to private or internal IP addresses are not allowed.')
+    }
   }
 
   /**
@@ -63,7 +113,22 @@ export class ScraperService {
         )
       }
 
-      return await response.text()
+      const contentType = response.headers.get('content-type') || ''
+      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+        throw new Error(`Invalid content type: ${contentType}. Expected HTML.`)
+      }
+
+      const contentLength = response.headers.get('content-length')
+      if (contentLength && parseInt(contentLength, 10) > 5 * 1024 * 1024) {
+        throw new Error('Page too large (exceeds 5MB limit).')
+      }
+
+      const text = await response.text()
+      if (text.length > 5 * 1024 * 1024) {
+        throw new Error('Page too large (exceeds 5MB limit).')
+      }
+
+      return text
     } catch (error: any) {
       if (error.name === 'TimeoutError') {
         throw new Error('Request timed out after 10 seconds.')
@@ -77,6 +142,12 @@ export class ScraperService {
    * converts to Markdown, and calculates metrics.
    */
   async scrape(url: string, options: ScrapeOptions = {}): Promise<ScrapeResult> {
+    // Check cache first
+    const cached = this.cache.get(url)
+    if (cached && cached.expiresAt > Date.now()) {
+      return { ...cached.result, cached: true }
+    }
+
     const rawHtml = await this.fetchHtml(url)
 
     // Calculate raw token count
@@ -127,7 +198,7 @@ export class ScraperService {
     const savingsPercent =
       rawTokenCount > 0 ? Math.round((tokensSavedEstimate / rawTokenCount) * 100) : 0
 
-    return {
+    const result: ScrapeResult = {
       status: 'success',
       title: article.title || 'Untitled',
       author: article.byline || null,
@@ -139,5 +210,10 @@ export class ScraperService {
       savingsPercent,
       markdown,
     }
+
+    // Store in cache
+    this.cache.set(url, { result, expiresAt: Date.now() + CACHE_DURATION_MINUTES })
+
+    return result
   }
 }
