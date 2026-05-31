@@ -27,6 +27,7 @@ interface CacheEntry {
 }
 
 const CACHE_DURATION_MINUTES = 10 * 60 * 1000 // 10 minutes
+const MAX_HTML_INPUT_LENGTH = 1024 * 1024 // 1 MB
 
 export class ScraperService {
   private turndownService: TurndownService
@@ -133,6 +134,12 @@ export class ScraperService {
       if (error.name === 'TimeoutError') {
         throw new Error('Request timed out after 10 seconds.')
       }
+      const networkErrors = ['fetch failed', 'ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN']
+      if (networkErrors.some((code) => error.message?.includes(code) || error.code === code)) {
+        throw new Error(
+          'Failed to fetch the page. The site may be down, blocking automated requests, or unreachable from this server.'
+        )
+      }
       throw new Error(`Failed to fetch HTML: ${error.message}`)
     }
   }
@@ -150,29 +157,102 @@ export class ScraperService {
 
     const rawHtml = await this.fetchHtml(url)
 
-    // Calculate raw token count
-    let rawTokenCount = 0
-    try {
-      rawTokenCount = encode(rawHtml).length
-    } catch (e) {
-      // Fallback simple estimation if tokenizer fails on huge raw inputs
-      rawTokenCount = Math.ceil(rawHtml.length / 4)
+    const article = this.extractArticle(rawHtml, url)
+    const markdown = this.turndownService.turndown(article.content || '').trim()
+
+    if (!markdown) {
+      throw new Error('Extracted content resulted in an empty Markdown string.')
     }
 
-    // Parse DOM with JSDOM
-    const dom = new JSDOM(rawHtml, { url })
+    const result = this.buildResult({
+      rawHtml,
+      markdown,
+      title: article.title || 'Untitled',
+      author: article.byline || null,
+      publishedDate: null,
+    })
+
+    // Store in cache
+    this.cache.set(url, { result, expiresAt: Date.now() + CACHE_DURATION_MINUTES })
+
+    console.log('result: ', result)
+    return result
+  }
+
+  /**
+   * Translates raw HTML directly to Markdown using Turndown,
+   * bypassing the Mozilla Readability selector, and calculates metrics.
+   */
+  async convertHtml(html: string): Promise<ScrapeResult> {
+    const rawHtml = html || ''
+
+    if (rawHtml.length > MAX_HTML_INPUT_LENGTH) {
+      throw new Error(`HTML input exceeds ${MAX_HTML_INPUT_LENGTH / 1024 / 1024}MB limit.`)
+    }
+
+    const cleanedHtml = this.stripNonContent(rawHtml)
+    const markdown = this.turndownService.turndown(cleanedHtml).trim()
+
+    const result = this.buildResult({
+      rawHtml,
+      markdown,
+      title: 'Direct HTML Input',
+      author: null,
+      publishedDate: null,
+    })
+
+    console.log('convert result: ', result)
+    return result
+  }
+
+  private countTokens(text: string): number {
+    try {
+      return encode(text).length
+    } catch (e) {
+      return Math.ceil(text.length / 4)
+    }
+  }
+
+  private buildResult(opts: {
+    rawHtml: string
+    markdown: string
+    title: string
+    author: string | null
+    publishedDate: string | null
+  }): ScrapeResult {
+    const rawTokenCount = this.countTokens(opts.rawHtml)
+    const wordCount = opts.markdown.split(/\s+/).filter((word) => word.length > 0).length
+    const cleanTokenCount = this.countTokens(opts.markdown)
+    const tokensSavedEstimate = Math.max(0, rawTokenCount - cleanTokenCount)
+    const savingsPercent =
+      rawTokenCount > 0 ? Math.round((tokensSavedEstimate / rawTokenCount) * 100) : 0
+
+    return {
+      status: 'success',
+      title: opts.title,
+      author: opts.author,
+      publishedDate: opts.publishedDate,
+      wordCount,
+      rawTokenCount,
+      cleanTokenCount,
+      tokensSavedEstimate,
+      savingsPercent,
+      markdown: opts.markdown,
+    }
+  }
+
+  private extractArticle(html: string, url?: string) {
+    const dom = new JSDOM(html, { url })
     const document = dom.window.document
 
     console.log('dom: ', dom)
     console.log('document: ', document)
 
-    // Remove scripts, styles, iframes, and other non-article nodes
     const removeElements = document.querySelectorAll('script, style, iframe, noscript')
     removeElements.forEach((el) => el.remove())
 
     console.log('document: ', document)
 
-    // Extract main content with Mozilla Readability
     const reader = new Readability(document)
     const article = reader.parse()
 
@@ -184,105 +264,16 @@ export class ScraperService {
       )
     }
 
-    // Convert content to Markdown using Turndown
-    const markdown = this.turndownService.turndown(article.content || '').trim()
-
-    console.log('markdown: ', markdown)
-
-    if (!markdown) {
-      throw new Error('Extracted content resulted in an empty Markdown string.')
-    }
-
-    // Calculate clean markdown word and token count
-    const wordCount = markdown.split(/\s+/).filter((word) => word.length > 0).length
-
-    let cleanTokenCount = 0
-    try {
-      cleanTokenCount = encode(markdown).length
-    } catch (e) {
-      cleanTokenCount = Math.ceil(markdown.length / 4)
-    }
-
-    const tokensSavedEstimate = Math.max(0, rawTokenCount - cleanTokenCount)
-    const savingsPercent =
-      rawTokenCount > 0 ? Math.round((tokensSavedEstimate / rawTokenCount) * 100) : 0
-
-    const result: ScrapeResult = {
-      status: 'success',
-      title: article.title || 'Untitled',
-      author: article.byline || null,
-      publishedDate: null, // Readability doesn't always provide publish date natively, can be expanded later
-      wordCount,
-      rawTokenCount,
-      cleanTokenCount,
-      tokensSavedEstimate,
-      savingsPercent,
-      markdown,
-    }
-
-    // Store in cache
-    this.cache.set(url, { result, expiresAt: Date.now() + CACHE_DURATION_MINUTES })
-
-    console.log('result: ', result)
-
-    return result
+    return article
   }
 
-  /**
-   * Translates raw HTML directly to Markdown using Turndown,
-   * bypassing the Mozilla Readability selector, and calculates metrics.
-   */
-  async convertHtml(html: string): Promise<ScrapeResult> {
-    const rawHtml = html || ''
-
-    // Calculate raw token count
-    let rawTokenCount = 0
-    try {
-      rawTokenCount = encode(rawHtml).length
-    } catch (e) {
-      rawTokenCount = Math.ceil(rawHtml.length / 4)
-    }
-
-    // Parse DOM and strip non-content elements before conversion
-    const dom = new JSDOM(rawHtml)
+  private stripNonContent(html: string): string {
+    const dom = new JSDOM(html)
     const document = dom.window.document
     const removeElements = document.querySelectorAll(
       'head, script, style, iframe, noscript, template, svg, canvas, meta, link'
     )
     removeElements.forEach((el) => el.remove())
-    const cleanedHtml = document.body.innerHTML
-
-    // Convert cleaned HTML directly to Markdown
-    const markdown = this.turndownService.turndown(cleanedHtml).trim()
-
-    // Calculate clean markdown word and token count
-    const wordCount = markdown.split(/\s+/).filter((word) => word.length > 0).length
-
-    let cleanTokenCount = 0
-    try {
-      cleanTokenCount = encode(markdown).length
-    } catch (e) {
-      cleanTokenCount = Math.ceil(markdown.length / 4)
-    }
-
-    const tokensSavedEstimate = Math.max(0, rawTokenCount - cleanTokenCount)
-    const savingsPercent =
-      rawTokenCount > 0 ? Math.round((tokensSavedEstimate / rawTokenCount) * 100) : 0
-
-    const result: ScrapeResult = {
-      status: 'success',
-      title: 'Direct HTML Input',
-      author: null,
-      publishedDate: null,
-      wordCount,
-      rawTokenCount,
-      cleanTokenCount,
-      tokensSavedEstimate,
-      savingsPercent,
-      markdown,
-    }
-
-    console.log('convert result: ', result)
-    return result
+    return document.body.innerHTML
   }
 }
