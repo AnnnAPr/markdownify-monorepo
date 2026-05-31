@@ -3,7 +3,9 @@
 import { useState, useEffect } from 'react'
 
 export default function Home() {
+  const [mode, setMode] = useState<'url' | 'html'>('url')
   const [url, setUrl] = useState('')
+  const [htmlInput, setHtmlInput] = useState('')
   const [markdown, setMarkdown] = useState('')
   const [stats, setStats] = useState<any>(null)
   const [rateLimit, setRateLimit] = useState<any>(null)
@@ -28,6 +30,14 @@ export default function Home() {
     fetchRateLimit()
   }, [])
 
+  const handleModeChange = (newMode: 'url' | 'html') => {
+    setMode(newMode)
+    setError('')
+    setMarkdown('')
+    setStats(null)
+    setCopied(false)
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setIsLoading(true)
@@ -37,12 +47,16 @@ export default function Home() {
     setCopied(false)
 
     try {
-      const response = await fetch(`http://localhost:3001/v1/scrape`, {
+      const isHtmlMode = mode === 'html'
+      const endpoint = isHtmlMode
+        ? 'http://localhost:3001/v1/convert'
+        : 'http://localhost:3001/v1/scrape'
+      const body = isHtmlMode ? JSON.stringify({ html: htmlInput }) : JSON.stringify({ url })
+
+      const response = await fetch(endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url }),
+        headers: { 'Content-Type': 'application/json' },
+        body,
       })
 
       if (!response.ok) {
@@ -50,12 +64,11 @@ export default function Home() {
         if (errData.rateLimit) {
           setRateLimit(errData.rateLimit)
         }
-        throw new Error(errData.message || 'Failed to fetch markdown')
+        throw new Error(errData.message || 'Failed to process request')
       }
 
       const data = await response.json()
-      // The backend returns the scraped markdown in data.markdown
-      setMarkdown(data.markdown || data.content || JSON.stringify(data, null, 2))
+      setMarkdown(data.markdown || '')
       setStats(data)
       if (data.rateLimit) {
         setRateLimit(data.rateLimit)
@@ -84,52 +97,153 @@ export default function Home() {
         <div className="text-center space-y-2 pt-12">
           <h1 className="text-4xl font-bold tracking-tight text-white">Markdownify</h1>
           <p className="text-neutral-400">
-            Paste any URL to extract its content into clean Markdown.
+            Extract any URL or convert raw HTML into clean Markdown.
           </p>
         </div>
 
+        {/* Mode Tab Toggle */}
+        <div className="flex justify-center">
+          <div className="inline-flex bg-neutral-900 border border-neutral-800 rounded-xl p-1 gap-1">
+            <button
+              type="button"
+              id="tab-url"
+              onClick={() => handleModeChange('url')}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                mode === 'url'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-800'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
+                />
+              </svg>
+              URL Extractor
+            </button>
+            <button
+              type="button"
+              id="tab-html"
+              onClick={() => handleModeChange('html')}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                mode === 'html'
+                  ? 'bg-violet-600 text-white shadow-sm'
+                  : 'text-neutral-400 hover:text-white hover:bg-neutral-800'
+              }`}
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
+                />
+              </svg>
+              HTML Converter
+            </button>
+          </div>
+        </div>
+
         {/* Input Form */}
-        <form onSubmit={handleSubmit} className="flex gap-4 max-w-2xl mx-auto">
-          <div className="relative flex-1">
-            <input
-              type="url"
-              value={url}
-              onChange={(e) => {
-                setUrl(e.target.value)
-                if (error) setError('')
-              }}
-              placeholder="https://example.com/article"
-              required
-              className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 pr-10 text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
-            />
-            {url && (
+        <form onSubmit={handleSubmit} className="max-w-2xl mx-auto space-y-3">
+          {mode === 'url' ? (
+            <div className="flex gap-4">
+              <div className="relative flex-1">
+                <input
+                  type="url"
+                  value={url}
+                  onChange={(e) => {
+                    setUrl(e.target.value)
+                    if (error) setError('')
+                  }}
+                  placeholder="https://example.com/article"
+                  required
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 pr-10 text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                />
+                {url && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUrl('')
+                      setError('')
+                    }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white transition-colors"
+                    aria-label="Clear URL"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                  </button>
+                )}
+              </div>
               <button
-                type="button"
-                onClick={() => {
-                  setUrl('')
-                  setError('')
-                }}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white transition-colors"
-                aria-label="Clear URL"
+                type="submit"
+                disabled={isLoading || !url}
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium transition-all active:scale-95 flex items-center justify-center min-w-[120px]"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                {isLoading ? 'Extracting...' : 'Extract'}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="relative">
+                <textarea
+                  value={htmlInput}
+                  onChange={(e) => {
+                    setHtmlInput(e.target.value)
+                    if (error) setError('')
+                  }}
+                  placeholder={`Paste raw HTML here...\n\n<article>\n  <h1>My Article</h1>\n  <p>Content goes here...</p>\n</article>`}
+                  required
+                  rows={8}
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 text-neutral-300 font-mono text-sm placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-all resize-y leading-relaxed"
+                />
+                {htmlInput && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHtmlInput('')
+                      setError('')
+                    }}
+                    className="absolute right-3 top-3 text-neutral-400 hover:text-white transition-colors"
+                    aria-label="Clear HTML"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                  </button>
+                )}
+              </div>
+              <button
+                type="submit"
+                disabled={isLoading || !htmlInput.trim()}
+                className="w-full bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
+                    d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
                   />
                 </svg>
+                {isLoading ? 'Converting...' : 'Convert to Markdown'}
               </button>
-            )}
-          </div>
-          <button
-            type="submit"
-            disabled={isLoading || !url}
-            className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-3 rounded-lg font-medium transition-all active:scale-95 flex items-center justify-center min-w-[120px]"
-          >
-            {isLoading ? 'Extracting...' : 'Extract'}
-          </button>
+            </div>
+          )}
         </form>
 
         {/* Error Message */}
@@ -140,7 +254,7 @@ export default function Home() {
         )}
 
         {/* Result Area */}
-        {markdown && (
+        {stats && (
           <div className="mt-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
             <div className="grid grid-cols-1 xl:grid-cols-[1fr_minmax(auto,896px)_1fr] gap-6 items-start">
               {/* Left spacer */}
@@ -203,6 +317,48 @@ export default function Home() {
                     className="w-full h-[500px] p-6 bg-neutral-900 border border-neutral-800 rounded-xl text-neutral-300 font-mono text-sm leading-relaxed focus:outline-none resize-y"
                   />
                 </div>
+
+                {/* Low-quality output warning — shown in HTML mode when result is nearly empty */}
+                {mode === 'html' && stats && stats.wordCount < 20 && (
+                  <div className="flex gap-3 p-4 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-300">
+                    <svg
+                      className="w-5 h-5 mt-0.5 shrink-0 text-amber-400"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+                      />
+                    </svg>
+                    <div className="text-sm space-y-1">
+                      <p className="font-medium text-amber-200">Output is nearly empty</p>
+                      <p className="text-amber-400/80">
+                        The pasted HTML produced very little readable content. This usually happens
+                        when you paste{' '}
+                        <code className="bg-amber-900/40 px-1 rounded text-amber-300">
+                          &lt;head&gt;
+                        </code>
+                        ,{' '}
+                        <code className="bg-amber-900/40 px-1 rounded text-amber-300">
+                          &lt;script&gt;
+                        </code>
+                        , or{' '}
+                        <code className="bg-amber-900/40 px-1 rounded text-amber-300">
+                          &lt;style&gt;
+                        </code>{' '}
+                        elements which contain no visible text. Try pasting the{' '}
+                        <code className="bg-amber-900/40 px-1 rounded text-amber-300">
+                          &lt;body&gt;
+                        </code>{' '}
+                        or a specific article element instead.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Stats Column */}
@@ -329,12 +485,16 @@ export default function Home() {
                       </div>
                       <div className="pt-4 border-t border-neutral-800">
                         <div className="text-sm text-neutral-400 mb-1">Tokens Saved</div>
-                        <div className="text-2xl font-semibold text-green-400">
-                          {stats.tokensSavedEstimate?.toLocaleString()}
-                          <span className="text-sm font-normal text-green-500/70 ml-2">
-                            ({stats.savingsPercent}%)
-                          </span>
-                        </div>
+                        {stats.wordCount >= 20 ? (
+                          <div className="text-2xl font-semibold text-green-400">
+                            {stats.tokensSavedEstimate?.toLocaleString()}
+                            <span className="text-sm font-normal text-green-500/70 ml-2">
+                              ({stats.savingsPercent}%)
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="text-2xl font-semibold text-neutral-500">—</div>
+                        )}
                       </div>
                     </div>
                   </div>

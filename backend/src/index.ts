@@ -226,6 +226,65 @@ app.post('/v1/scrape', async (c) => {
   }
 })
 
+app.post('/v1/convert', async (c) => {
+  const connInfo = getConnInfo(c)
+  const ip =
+    c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? connInfo.remote.address ?? 'unknown'
+
+  try {
+    // Check rate limit
+    const rateLimit = checkRateLimit(ip)
+    if (!rateLimit.allowed) {
+      const resetSecs = Math.ceil(rateLimit.resetInMs / 1000)
+      const isDaily = rateLimit.reason === 'daily'
+      const limitInfo = getRateLimitInfo(ip)
+      return c.json(
+        {
+          status: 'error',
+          message: isDaily
+            ? `Daily limit reached. You can make ${RATE_LIMIT_DAILY_MAX} requests per day. Try again in ${resetSecs}s.`
+            : `Rate limit exceeded. You can make ${RATE_LIMIT_BURST_MAX} requests per 15 minutes. Try again in ${resetSecs}s.`,
+          rateLimit: limitInfo,
+        },
+        429
+      )
+    }
+
+    const body = await c.req.json().catch(() => ({}))
+    const { html } = body
+
+    if (!html || typeof html !== 'string') {
+      const limitInfo = getRateLimitInfo(ip)
+      return c.json(
+        {
+          status: 'error',
+          message: 'Invalid request: "html" parameter is required and must be a string.',
+          rateLimit: limitInfo,
+        },
+        400
+      )
+    }
+
+    const result = await scraperService.convertHtml(html)
+    const limitInfo = getRateLimitInfo(ip)
+    return c.json({
+      ...result,
+      rateLimit: limitInfo,
+    })
+  } catch (error: any) {
+    console.error(`[Convert Error] ${error.message}`)
+    const limitInfo = getRateLimitInfo(ip)
+    return c.json(
+      {
+        status: 'error',
+        message: error.message || 'An unexpected error occurred during direct HTML conversion.',
+        rateLimit: limitInfo,
+      },
+      500
+    )
+  }
+})
+
 const server = serve(
   {
     fetch: app.fetch,

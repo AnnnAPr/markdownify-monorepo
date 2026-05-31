@@ -227,4 +227,62 @@ export class ScraperService {
 
     return result
   }
+
+  /**
+   * Translates raw HTML directly to Markdown using Turndown,
+   * bypassing the Mozilla Readability selector, and calculates metrics.
+   */
+  async convertHtml(html: string): Promise<ScrapeResult> {
+    const rawHtml = html || ''
+
+    // Calculate raw token count
+    let rawTokenCount = 0
+    try {
+      rawTokenCount = encode(rawHtml).length
+    } catch (e) {
+      rawTokenCount = Math.ceil(rawHtml.length / 4)
+    }
+
+    // Parse DOM and strip non-content elements before conversion
+    const dom = new JSDOM(rawHtml)
+    const document = dom.window.document
+    const removeElements = document.querySelectorAll(
+      'head, script, style, iframe, noscript, template, svg, canvas, meta, link'
+    )
+    removeElements.forEach((el) => el.remove())
+    const cleanedHtml = document.body.innerHTML
+
+    // Convert cleaned HTML directly to Markdown
+    const markdown = this.turndownService.turndown(cleanedHtml).trim()
+
+    // Calculate clean markdown word and token count
+    const wordCount = markdown.split(/\s+/).filter((word) => word.length > 0).length
+
+    let cleanTokenCount = 0
+    try {
+      cleanTokenCount = encode(markdown).length
+    } catch (e) {
+      cleanTokenCount = Math.ceil(markdown.length / 4)
+    }
+
+    const tokensSavedEstimate = Math.max(0, rawTokenCount - cleanTokenCount)
+    const savingsPercent =
+      rawTokenCount > 0 ? Math.round((tokensSavedEstimate / rawTokenCount) * 100) : 0
+
+    const result: ScrapeResult = {
+      status: 'success',
+      title: 'Direct HTML Input',
+      author: null,
+      publishedDate: null,
+      wordCount,
+      rawTokenCount,
+      cleanTokenCount,
+      tokensSavedEstimate,
+      savingsPercent,
+      markdown,
+    }
+
+    console.log('convert result: ', result)
+    return result
+  }
 }
