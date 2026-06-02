@@ -6,11 +6,11 @@ import { ScraperService } from './services/scraper.service.js'
 
 // ---------------------------------------------------------------------------
 // Per-IP rate limiter (in-memory, no external dependency)
-// Rules: 30 requests per 15-minute window AND 200 requests per day per IP
+// Rules: 30 requests per 15-minute window AND 100 requests per day per IP
 // ---------------------------------------------------------------------------
 const RATE_LIMIT_BURST_MAX = 30
 const RATE_LIMIT_BURST_WINDOW = 15 * 60 * 1000 // 15 minutes
-const RATE_LIMIT_DAILY_MAX = 200
+const RATE_LIMIT_DAILY_MAX = 100
 const RATE_LIMIT_DAILY_WINDOW = 24 * 60 * 60 * 1000 // 24 hours
 
 interface RateEntry {
@@ -72,8 +72,6 @@ function checkRateLimit(ip: string): {
 } {
   const now = Date.now()
   let entry = rateLimitMap.get(ip)
-
-  console.log('entry: ', entry)
 
   // First request from this IP
   if (!entry) {
@@ -156,8 +154,6 @@ app.post('/v1/scrape', async (c) => {
     c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? connInfo.remote.address ?? 'unknown'
 
   try {
-    console.log('ip: ', ip)
-
     // Check per-IP rate limit
     const rateLimit = checkRateLimit(ip)
     if (!rateLimit.allowed) {

@@ -175,7 +175,6 @@ export class ScraperService {
     // Store in cache
     this.cache.set(url, { result, expiresAt: Date.now() + CACHE_DURATION_MINUTES })
 
-    console.log('result: ', result)
     return result
   }
 
@@ -201,7 +200,6 @@ export class ScraperService {
       publishedDate: null,
     })
 
-    console.log('convert result: ', result)
     return result
   }
 
@@ -245,18 +243,11 @@ export class ScraperService {
     const dom = new JSDOM(html, { url })
     const document = dom.window.document
 
-    console.log('dom: ', dom)
-    console.log('document: ', document)
-
     const removeElements = document.querySelectorAll('script, style, iframe, noscript')
     removeElements.forEach((el) => el.remove())
 
-    console.log('document: ', document)
-
     const reader = new Readability(document)
     const article = reader.parse()
-
-    console.log('article: ', article)
 
     if (!article) {
       throw new Error(
