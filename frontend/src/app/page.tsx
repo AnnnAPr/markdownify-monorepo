@@ -2,21 +2,45 @@
 
 import { useState, useEffect } from 'react'
 
+interface RateLimitInfo {
+  burstLimit: number
+  burstRemaining: number
+  burstResetInMs: number
+  dailyLimit: number
+  dailyRemaining: number
+  dailyResetInMs: number
+}
+
+interface ScrapeResult {
+  status: string
+  title: string
+  author: string | null
+  publishedDate: string | null
+  wordCount: number
+  rawTokenCount?: number
+  cleanTokenCount?: number
+  tokensSavedEstimate?: number
+  savingsPercent?: number
+  markdown: string
+  cached?: boolean
+}
+
 export default function Home() {
   const [mode, setMode] = useState<'url' | 'html'>('url')
   const [url, setUrl] = useState('')
   const [htmlInput, setHtmlInput] = useState('')
   const [markdown, setMarkdown] = useState('')
-  const [stats, setStats] = useState<any>(null)
-  const [rateLimit, setRateLimit] = useState<any>(null)
+  const [stats, setStats] = useState<ScrapeResult | null>(null)
+  const [rateLimit, setRateLimit] = useState<RateLimitInfo | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
     const fetchRateLimit = async () => {
       try {
-        const res = await fetch(`http://localhost:3001/v1/rate-limit`)
+        const res = await fetch(`${API_URL}/v1/rate-limit`)
         if (res.ok) {
           const data = await res.json()
           if (data.rateLimit) {
@@ -48,9 +72,8 @@ export default function Home() {
 
     try {
       const isHtmlMode = mode === 'html'
-      const endpoint = isHtmlMode
-        ? 'http://localhost:3001/v1/convert'
-        : 'http://localhost:3001/v1/scrape'
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+      const endpoint = isHtmlMode ? `${API_URL}/v1/convert` : `${API_URL}/v1/scrape`
       const body = isHtmlMode ? JSON.stringify({ html: htmlInput }) : JSON.stringify({ url })
 
       const response = await fetch(endpoint, {
@@ -73,8 +96,8 @@ export default function Home() {
       if (data.rateLimit) {
         setRateLimit(data.rateLimit)
       }
-    } catch (err: any) {
-      setError(err.message || 'Something went wrong')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
     } finally {
       setIsLoading(false)
     }

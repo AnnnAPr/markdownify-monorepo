@@ -1,0 +1,10 @@
+{
+  "buildCommand": "npm install && npm run build --workspace=frontend",
+  "outputDirectory": "frontend/.next",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "regions": ["iad1"],
+  "env": {
+    "NEXT_PUBLIC_API_URL": "https://markdownify-api.onrender.com"
+  }
+}

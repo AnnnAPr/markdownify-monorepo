@@ -285,10 +285,12 @@ app.post('/v1/convert', async (c) => {
   }
 })
 
+const PORT = parseInt(process.env.PORT || '3001', 10)
+
 const server = serve(
   {
     fetch: app.fetch,
-    port: 3001,
+    port: PORT,
   },
   (info) => {
     console.log(`Server is running on http://localhost:${info.port}`)

@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: markdownify-api
+    runtime: node
+    plan: free
+    buildCommand: npm install --workspace=backend && npm run build --workspace=backend
+    startCommand: npm start --workspace=backend
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001

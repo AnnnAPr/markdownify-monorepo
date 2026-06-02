@@ -10,6 +10,8 @@ out/
 # TypeScript build output
 dist/
 **/dist/
+*.tsbuildinfo
+**/*.tsbuildinfo
 
 # Local env files
 .env
@@ -17,8 +19,6 @@ dist/
 .env.development.local
 .env.test.local
 .env.production.local
-**/.env
-**/.env.*
 
 # Logs and debug files
 logs/
