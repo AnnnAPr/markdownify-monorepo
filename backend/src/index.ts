@@ -1,8 +1,12 @@
+import dotenv from 'dotenv'
+dotenv.config({ path: '.env.local' })
+
 import { serve } from '@hono/node-server'
 import { getConnInfo } from '@hono/node-server/conninfo'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { ScraperService } from './services/scraper.service.js'
+import { metricsService } from './services/metrics.service.js'
 
 // ---------------------------------------------------------------------------
 // Per-IP rate limiter (in-memory, no external dependency)
@@ -65,11 +69,11 @@ function getRateLimitInfo(ip: string) {
   }
 }
 
-function checkRateLimit(ip: string): {
+async function checkRateLimit(ip: string): Promise<{
   allowed: boolean
   reason?: 'burst' | 'daily'
   resetInMs: number
-} {
+}> {
   const now = Date.now()
   let entry = rateLimitMap.get(ip)
 
@@ -81,6 +85,7 @@ function checkRateLimit(ip: string): {
       dailyCount: 1,
       dailyWindowStart: now,
     })
+    await metricsService.recordRequest(ip)
     return { allowed: true, resetInMs: RATE_LIMIT_BURST_WINDOW }
   }
 
@@ -98,12 +103,14 @@ function checkRateLimit(ip: string): {
 
   // Check daily cap first (stricter — blocks for longer)
   if (entry.dailyCount >= RATE_LIMIT_DAILY_MAX) {
+    await metricsService.recordFailure()
     const resetInMs = RATE_LIMIT_DAILY_WINDOW - (now - entry.dailyWindowStart)
     return { allowed: false, reason: 'daily', resetInMs }
   }
 
   // Check burst cap
   if (entry.burstCount >= RATE_LIMIT_BURST_MAX) {
+    await metricsService.recordFailure()
     const resetInMs = RATE_LIMIT_BURST_WINDOW - (now - entry.burstWindowStart)
     return { allowed: false, reason: 'burst', resetInMs }
   }
@@ -111,6 +118,7 @@ function checkRateLimit(ip: string): {
   // Allow — increment both counters
   entry.burstCount++
   entry.dailyCount++
+  await metricsService.recordRequest(ip)
   return { allowed: true, resetInMs: RATE_LIMIT_BURST_WINDOW - (now - entry.burstWindowStart) }
 }
 
@@ -148,14 +156,23 @@ app.get('/v1/rate-limit', (c) => {
   })
 })
 
+app.get('/v1/metrics', async (c) => {
+  const snapshot = await metricsService.getSnapshot()
+  return c.json({
+    status: 'success',
+    ...snapshot,
+  })
+})
+
 app.post('/v1/scrape', async (c) => {
   const connInfo = getConnInfo(c)
   const ip =
     c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? connInfo.remote.address ?? 'unknown'
+  console.log('[Scrape] IP:', ip)
 
   try {
     // Check per-IP rate limit
-    const rateLimit = checkRateLimit(ip)
+    const rateLimit = await checkRateLimit(ip)
     if (!rateLimit.allowed) {
       const resetSecs = Math.ceil(rateLimit.resetInMs / 1000)
       const isDaily = rateLimit.reason === 'daily'
@@ -203,6 +220,8 @@ app.post('/v1/scrape', async (c) => {
     }
 
     const result = await scraperService.scrape(url)
+    await metricsService.recordUrlRequest(ip)
+    await metricsService.recordSuccess(result.tokensSavedEstimate, result.wordCount)
     const limitInfo = getRateLimitInfo(ip)
     return c.json({
       ...result,
@@ -210,6 +229,7 @@ app.post('/v1/scrape', async (c) => {
     })
   } catch (error: any) {
     console.error(`[Scrape Error] ${error.message}`)
+    await metricsService.recordFailure()
     const limitInfo = getRateLimitInfo(ip)
     return c.json(
       {
@@ -226,21 +246,20 @@ app.post('/v1/convert', async (c) => {
   const connInfo = getConnInfo(c)
   const ip =
     c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? connInfo.remote.address ?? 'unknown'
+  console.log('[Convert] IP:', ip)
 
   try {
     // Check rate limit
-    const rateLimit = checkRateLimit(ip)
+    const rateLimit = await checkRateLimit(ip)
     if (!rateLimit.allowed) {
-      const resetSecs = Math.ceil(rateLimit.resetInMs / 1000)
-      const isDaily = rateLimit.reason === 'daily'
-      const limitInfo = getRateLimitInfo(ip)
       return c.json(
         {
           status: 'error',
-          message: isDaily
-            ? `Daily limit reached. You can make ${RATE_LIMIT_DAILY_MAX} requests per day. Try again in ${resetSecs}s.`
-            : `Rate limit exceeded. You can make ${RATE_LIMIT_BURST_MAX} requests per 15 minutes. Try again in ${resetSecs}s.`,
-          rateLimit: limitInfo,
+          message:
+            rateLimit.reason === 'daily'
+              ? `Daily limit reached. You can make ${RATE_LIMIT_DAILY_MAX} requests per day. Try again in ${Math.ceil(rateLimit.resetInMs / 1000)}s.`
+              : `Rate limit exceeded. You can make ${RATE_LIMIT_BURST_MAX} requests per 15 minutes. Try again in ${Math.ceil(rateLimit.resetInMs / 1000)}s.`,
+          rateLimit: getRateLimitInfo(ip),
         },
         429
       )
@@ -262,6 +281,8 @@ app.post('/v1/convert', async (c) => {
     }
 
     const result = await scraperService.convertHtml(html)
+    await metricsService.recordHtmlRequest(ip)
+    await metricsService.recordSuccess(result.tokensSavedEstimate, result.wordCount)
     const limitInfo = getRateLimitInfo(ip)
     return c.json({
       ...result,
@@ -269,6 +290,7 @@ app.post('/v1/convert', async (c) => {
     })
   } catch (error: any) {
     console.error(`[Convert Error] ${error.message}`)
+    await metricsService.recordFailure()
     const limitInfo = getRateLimitInfo(ip)
     return c.json(
       {

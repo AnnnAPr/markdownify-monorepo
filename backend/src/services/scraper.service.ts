@@ -2,6 +2,7 @@ import { JSDOM } from 'jsdom'
 import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
 import { encode } from 'gpt-tokenizer'
+import { metricsService } from './metrics.service.js'
 
 export interface ScrapeOptions {
   removeImages?: boolean
@@ -152,6 +153,7 @@ export class ScraperService {
     // Check cache first
     const cached = this.cache.get(url)
     if (cached && cached.expiresAt > Date.now()) {
+      await metricsService.recordCacheHit()
       return { ...cached.result, cached: true }
     }
 
