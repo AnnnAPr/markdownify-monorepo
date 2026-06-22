@@ -7,18 +7,10 @@
     "backend"
   ],
   "scripts": {
+    "build": "npm run build --workspace=frontend",
     "frontend:dev": "npm --workspace=frontend run dev",
     "backend:dev": "npm --workspace=backend run dev",
-    "lint": "npm --workspace=frontend run lint"
-  },
-  "devDependencies": {
-    "husky": "^9.1.7",
-    "lint-staged": "^16.4.0",
-    "prettier": "^3.8.3"
-  },
-  "lint-staged": {
-    "**/*.{ts,tsx,js,jsx,json,css,md}": [
-      "prettier --write"
-    ]
+    "lint": "npm --workspace=frontend run lint",
+    "prepare": "if [ \"$NODE_ENV\" != \"production\" ]; then husky; fi"
   }
 }
