@@ -18,54 +18,34 @@ class MetricsService {
     return this.supabase
   }
 
+  // Increment metric column in DB
   private async updateField(field: string, value: number): Promise<void> {
     const client = this.getClient()
     if (!client) return
-
     try {
-      const { data, error: selectError } = await client
-        .from('app_metrics')
-        .select(field)
-        .eq('id', 1)
-        .single()
-      const currentValue = data?.[field] || 0
-      const { error } = await client.from('app_metrics').upsert({
-        id: 1,
-        [field]: currentValue + value,
+      const { error } = await client.rpc('increment_metric', {
+        field_name: field,
+        increment_by: value,
       })
-      if (error) console.error(`[Metrics] upsert error for ${field}:`, error)
+      if (error) console.error(`[Metrics] increment_metric error for ${field}:`, error)
     } catch (e) {
-      console.error(`Failed to update ${field}:`, e)
+      console.error(`[Metrics] Failed to update ${field}:`, e)
     }
   }
 
-  private async updateIpStats(ip: string, type: 'urls' | 'htmls'): Promise<void> {
+  // Update JSONB stats for a given IP address
+  private async updateIpStats(ip: string, type: 'urls' | 'htmls' | 'views'): Promise<void> {
     const client = this.getClient()
     if (!client) return
 
     try {
-      const { data, error } = await client
-        .from('app_metrics')
-        .select('ip_stats')
-        .eq('id', 1)
-        .single()
-      const ipStats: Record<string, { urls: number; htmls: number }> = data?.ip_stats || {}
-
-      if (!ipStats[ip]) {
-        ipStats[ip] = { urls: 0, htmls: 0 }
-      }
-      ipStats[ip][type] = (ipStats[ip][type] || 0) + 1
-
-      console.log(`[Metrics] Updating IP stats for ${ip}:`, ipStats[ip])
-
-      const { error: upsertError } = await client.from('app_metrics').upsert({
-        id: 1,
-        ip_stats: ipStats,
-        unique_ips: Object.keys(ipStats).length,
+      const { error } = await client.rpc('update_ip_stats', {
+        p_ip: ip,
+        p_type: type,
       })
-      if (upsertError) console.error('[Metrics] IP stats upsert error:', upsertError)
+      if (error) console.error('[Metrics] update_ip_stats error:', error)
     } catch (e) {
-      console.error('Failed to update IP stats:', e)
+      console.error('[Metrics] Failed to update IP stats:', e)
     }
   }
 
@@ -75,6 +55,11 @@ class MetricsService {
 
   async recordCacheHit(): Promise<void> {
     await this.updateField('cache_hits', 1)
+  }
+
+  async recordPageView(ip: string): Promise<void> {
+    await this.updateField('page_views', 1)
+    await this.updateIpStats(ip, 'views')
   }
 
   async recordSuccess(tokensSaved: number, wordCount: number): Promise<void> {
@@ -106,6 +91,7 @@ class MetricsService {
       totalWordCount: number
       urlRequests: number
       htmlRequests: number
+      pageViews: number
     }
   > {
     const client = this.getClient()
@@ -121,6 +107,7 @@ class MetricsService {
         totalWordCount: 0,
         urlRequests: 0,
         htmlRequests: 0,
+        pageViews: 0,
       }
     }
 
@@ -138,12 +125,13 @@ class MetricsService {
           totalWordCount: 0,
           urlRequests: 0,
           htmlRequests: 0,
+          pageViews: 0,
         }
       }
       console.log('[Metrics] Data from DB:', data)
       return {
         totalRequests: data?.total_requests || 0,
-        uniqueIps: data?.ip_stats ? Object.keys(data.ip_stats).length : 0,
+        uniqueIps: data?.unique_ips || 0,
         cacheHits: data?.cache_hits || 0,
         successes: data?.successes || 0,
         failures: data?.failures || 0,
@@ -155,10 +143,11 @@ class MetricsService {
         htmlRequests: data?.ip_stats
           ? Object.values(data.ip_stats).reduce((sum: number, s: any) => sum + (s.htmls || 0), 0)
           : 0,
+        pageViews: data?.page_views || 0,
         ipStats: data?.ip_stats || {},
       }
     } catch (e) {
-      console.error('Failed to load metrics:', e)
+      console.error('[Metrics] Failed to load metrics:', e)
       return {
         totalRequests: 0,
         uniqueIps: 0,
@@ -169,6 +158,7 @@ class MetricsService {
         totalWordCount: 0,
         urlRequests: 0,
         htmlRequests: 0,
+        pageViews: 0,
       }
     }
   }

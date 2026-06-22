@@ -3,10 +3,8 @@ import { Readability } from '@mozilla/readability'
 import TurndownService from 'turndown'
 import { encode } from 'gpt-tokenizer'
 import { metricsService } from './metrics.service.js'
-
-export interface ScrapeOptions {
-  removeImages?: boolean
-}
+import { isIP } from 'net'
+import dns from 'dns/promises'
 
 export interface ScrapeResult {
   status: 'success' | 'error'
@@ -50,6 +48,62 @@ export class ScraperService {
     })
   }
 
+  private isPrivateIp(ip: string): boolean {
+    if (isIP(ip) === 4) {
+      const parts = ip.split('.').map(Number)
+      return (
+        parts[0] === 10 ||
+        (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+        (parts[0] === 192 && parts[1] === 168) ||
+        (parts[0] === 169 && parts[1] === 254) ||
+        parts[0] === 127 ||
+        parts[0] === 0
+      )
+    } else if (isIP(ip) === 6) {
+      const normalized = ip.toLowerCase()
+      return (
+        normalized === '::1' ||
+        normalized === '::' ||
+        normalized.startsWith('fe80:') ||
+        normalized.startsWith('fc00:') ||
+        normalized.startsWith('fd00:')
+      )
+    }
+    return true // treat unrecognized as unsafe
+  }
+
+  private async resolveAndValidateUrl(urlString: string): Promise<void> {
+    const parsedUrl = new URL(urlString)
+    const hostname = parsedUrl.hostname.toLowerCase().replace(/\.$/, '')
+
+    // If hostname is directly an IP, validate it
+    if (isIP(hostname)) {
+      if (this.isPrivateIp(hostname)) {
+        throw new Error('Access to private IP addresses is blocked.')
+      }
+      return
+    }
+
+    try {
+      // Resolve DNS
+      const addresses = await dns.resolve(hostname).catch(async () => {
+        const result = await dns.lookup(hostname)
+        return [result.address]
+      })
+
+      for (const addr of addresses) {
+        if (this.isPrivateIp(addr)) {
+          throw new Error(`Access blocked: Domain resolves to a private IP (${addr}).`)
+        }
+      }
+    } catch (e: any) {
+      if (e.message.includes('Access blocked')) {
+        throw e
+      }
+      throw new Error(`DNS resolution failed for hostname: ${hostname}.`)
+    }
+  }
+
   /**
    * Validates a URL for security risks before making any network requests.
    * Blocks private/internal IPs (SSRF protection) and non-HTTP protocols.
@@ -70,24 +124,17 @@ export class ScraperService {
     }
 
     // Block private/internal IPs and localhost (SSRF protection)
-    const hostname = parsedUrl.hostname.toLowerCase()
+    const hostname = parsedUrl.hostname.toLowerCase().replace(/\.$/, '')
     const blockedPatterns = ['localhost', '127.0.0.1', '0.0.0.0', '::1', '[::1]']
 
     if (blockedPatterns.includes(hostname)) {
       throw new Error('URLs pointing to localhost or loopback addresses are not allowed.')
     }
 
-    // Block private IP ranges: 10.x.x.x, 192.168.x.x, 172.16-31.x.x
-    const privateIpPatterns = [
-      /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/,
-      /^192\.168\.\d{1,3}\.\d{1,3}$/,
-      /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/,
-      /^169\.254\.\d{1,3}\.\d{1,3}$/, // Link-local
-      /^0\.0\.0\.0$/,
-    ]
-
-    if (privateIpPatterns.some((pattern) => pattern.test(hostname))) {
-      throw new Error('URLs pointing to private or internal IP addresses are not allowed.')
+    if (isIP(hostname)) {
+      if (this.isPrivateIp(hostname)) {
+        throw new Error('URLs pointing to private or internal IP addresses are not allowed.')
+      }
     }
   }
 
@@ -96,41 +143,66 @@ export class ScraperService {
    * Mimics a realistic browser user agent to avoid simple blocking.
    */
   async fetchHtml(url: string): Promise<string> {
+    let currentUrl = url
+    let redirectsCount = 0
+    const maxRedirects = 5
+
     try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          Accept:
-            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        // Timeout signal (10 seconds)
-        signal: AbortSignal.timeout(10000),
-      })
+      while (redirectsCount <= maxRedirects) {
+        this.validateUrl(currentUrl)
+        await this.resolveAndValidateUrl(currentUrl)
 
-      if (!response.ok) {
-        throw new Error(
-          `Failed to fetch page. HTTP Status: ${response.status} ${response.statusText}`
-        )
+        const response = await fetch(currentUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            Accept:
+              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+          },
+          signal: AbortSignal.timeout(10000),
+          redirect: 'manual', // Intercept redirects!
+        })
+
+        // Check for redirects
+        if (response.status >= 300 && response.status < 400) {
+          const location = response.headers.get('location')
+          if (!location) {
+            throw new Error(`Redirect status ${response.status} with no location header.`)
+          }
+
+          // Compute absolute redirect URL
+          const nextUrl = new URL(location, currentUrl).toString()
+          currentUrl = nextUrl
+          redirectsCount++
+          continue
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            `Failed to fetch page. HTTP Status: ${response.status} ${response.statusText}`
+          )
+        }
+
+        const contentType = response.headers.get('content-type') || ''
+        if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+          throw new Error(`Invalid content type: ${contentType}. Expected HTML.`)
+        }
+
+        const contentLength = response.headers.get('content-length')
+        if (contentLength && parseInt(contentLength, 10) > 5 * 1024 * 1024) {
+          throw new Error('Page too large (exceeds 5MB limit).')
+        }
+
+        const text = await response.text()
+        if (text.length > 5 * 1024 * 1024) {
+          throw new Error('Page too large (exceeds 5MB limit).')
+        }
+
+        return text
       }
 
-      const contentType = response.headers.get('content-type') || ''
-      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
-        throw new Error(`Invalid content type: ${contentType}. Expected HTML.`)
-      }
-
-      const contentLength = response.headers.get('content-length')
-      if (contentLength && parseInt(contentLength, 10) > 5 * 1024 * 1024) {
-        throw new Error('Page too large (exceeds 5MB limit).')
-      }
-
-      const text = await response.text()
-      if (text.length > 5 * 1024 * 1024) {
-        throw new Error('Page too large (exceeds 5MB limit).')
-      }
-
-      return text
+      throw new Error('Too many redirects.')
     } catch (error: any) {
       if (error.name === 'TimeoutError') {
         throw new Error('Request timed out after 10 seconds.')
@@ -149,7 +221,7 @@ export class ScraperService {
    * Main scrape logic: extracts clean HTML using Mozilla Readability,
    * converts to Markdown, and calculates metrics.
    */
-  async scrape(url: string, options: ScrapeOptions = {}): Promise<ScrapeResult> {
+  async scrape(url: string): Promise<ScrapeResult> {
     // Check cache first
     const cached = this.cache.get(url)
     if (cached && cached.expiresAt > Date.now()) {

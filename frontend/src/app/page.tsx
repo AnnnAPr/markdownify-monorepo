@@ -113,6 +113,48 @@ export default function Home() {
     }
   }
 
+  const handleDownload = () => {
+    if (!markdown) return
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8;' })
+    const urlBlob = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = urlBlob
+    const fileName = stats?.title
+      ? `${stats.title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`
+      : 'extracted.md'
+    link.setAttribute('download', fileName)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(urlBlob)
+  }
+
+  // Real-time Rate Limit Countdown Timer
+  useEffect(() => {
+    if (!rateLimit) return
+    const hasBurstTimer = rateLimit.burstRemaining === 0 && rateLimit.burstResetInMs > 0
+    const hasDailyTimer = rateLimit.dailyRemaining === 0 && rateLimit.dailyResetInMs > 0
+    if (!hasBurstTimer && !hasDailyTimer) return
+
+    const timer = setInterval(() => {
+      setRateLimit((prev) => {
+        if (!prev) return null
+        return {
+          ...prev,
+          burstResetInMs: Math.max(0, prev.burstResetInMs - 1000),
+          dailyResetInMs: Math.max(0, prev.dailyResetInMs - 1000),
+        }
+      })
+    }, 1000)
+
+    return () => clearInterval(timer)
+  }, [
+    rateLimit
+      ? (rateLimit.burstRemaining === 0 && rateLimit.burstResetInMs > 0) ||
+        (rateLimit.dailyRemaining === 0 && rateLimit.dailyResetInMs > 0)
+      : false,
+  ])
+
   return (
     <main className="min-h-screen bg-neutral-950 text-neutral-100 p-8 font-sans">
       <div className="max-w-[1600px] mx-auto space-y-8">
@@ -178,20 +220,27 @@ export default function Home() {
                 <input
                   type="url"
                   value={url}
+                  disabled={isLoading}
                   onChange={(e) => {
                     setUrl(e.target.value)
                     if (error) setError('')
+                    setStats(null)
+                    setMarkdown('')
+                    setCopied(false)
                   }}
                   placeholder="https://example.com/article"
                   required
-                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 pr-10 text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 pr-10 text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                {url && (
+                {url && !isLoading && (
                   <button
                     type="button"
                     onClick={() => {
                       setUrl('')
                       setError('')
+                      setStats(null)
+                      setMarkdown('')
+                      setCopied(false)
                     }}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-white transition-colors"
                     aria-label="Clear URL"
@@ -220,21 +269,28 @@ export default function Home() {
               <div className="relative">
                 <textarea
                   value={htmlInput}
+                  disabled={isLoading}
                   onChange={(e) => {
                     setHtmlInput(e.target.value)
                     if (error) setError('')
+                    setStats(null)
+                    setMarkdown('')
+                    setCopied(false)
                   }}
                   placeholder={`Paste raw HTML here...\n\n<article>\n  <h1>My Article</h1>\n  <p>Content goes here...</p>\n</article>`}
                   required
                   rows={8}
-                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 text-neutral-300 font-mono text-sm placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-all resize-y leading-relaxed"
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 text-neutral-300 font-mono text-sm placeholder-neutral-600 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-all resize-y leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                {htmlInput && (
+                {htmlInput && !isLoading && (
                   <button
                     type="button"
                     onClick={() => {
                       setHtmlInput('')
                       setError('')
+                      setStats(null)
+                      setMarkdown('')
+                      setCopied(false)
                     }}
                     className="absolute right-3 top-3 text-neutral-400 hover:text-white transition-colors"
                     aria-label="Clear HTML"
@@ -287,50 +343,71 @@ export default function Home() {
               <div className="w-full space-y-4">
                 <div className="flex items-center justify-between">
                   <h2 className="text-xl font-semibold">Result</h2>
-                  <button
-                    onClick={handleCopy}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
-                      copied
-                        ? 'bg-green-600/20 text-green-400 border border-green-600/50'
-                        : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700'
-                    }`}
-                  >
-                    {copied ? (
-                      <>
-                        <svg
-                          className="w-4 h-4"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M5 13l4 4L19 7"
-                          />
-                        </svg>
-                        Copied!
-                      </>
-                    ) : (
-                      <>
-                        <svg
-                          className="w-4 h-4"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"
-                          />
-                        </svg>
-                        Copy Markdown
-                      </>
-                    )}
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleCopy}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                        copied
+                          ? 'bg-green-600/20 text-green-400 border border-green-600/50'
+                          : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700'
+                      }`}
+                    >
+                      {copied ? (
+                        <>
+                          <svg
+                            className="w-4 h-4"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M5 13l4 4L19 7"
+                            />
+                          </svg>
+                          Copied!
+                        </>
+                      ) : (
+                        <>
+                          <svg
+                            className="w-4 h-4"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"
+                            />
+                          </svg>
+                          Copy Markdown
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={handleDownload}
+                      className="flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-all bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700 active:scale-95"
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                        />
+                      </svg>
+                      Download .md
+                    </button>
+                  </div>
                 </div>
 
                 <div className="relative group">
@@ -527,6 +604,29 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* Floating Feedback Button */}
+      <a
+        href="https://forms.gle/rGmrD4HJ86dMw2Tm9"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="fixed top-6 right-6 z-50 flex items-center gap-2 bg-neutral-900/80 hover:bg-neutral-800 border border-neutral-800 hover:border-neutral-700 backdrop-blur-md text-neutral-300 hover:text-white px-4 py-2.5 rounded-full shadow-lg shadow-black/40 transition-all hover:scale-105 active:scale-95 text-sm font-medium"
+      >
+        <svg
+          className="w-4 h-4 text-blue-500"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"
+          />
+        </svg>
+        Share Feedback
+      </a>
     </main>
   )
 }

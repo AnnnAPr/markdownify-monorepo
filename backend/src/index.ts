@@ -8,10 +8,8 @@ import { cors } from 'hono/cors'
 import { ScraperService } from './services/scraper.service.js'
 import { metricsService } from './services/metrics.service.js'
 
-// ---------------------------------------------------------------------------
-// Per-IP rate limiter (in-memory, no external dependency)
+// Per-IP rate limiter (in-memory)
 // Rules: 30 requests per 15-minute window AND 100 requests per day per IP
-// ---------------------------------------------------------------------------
 const RATE_LIMIT_BURST_MAX = 30
 const RATE_LIMIT_BURST_WINDOW = 15 * 60 * 1000 // 15 minutes
 const RATE_LIMIT_DAILY_MAX = 100
@@ -27,6 +25,24 @@ interface RateEntry {
 }
 
 const rateLimitMap = new Map<string, RateEntry>()
+
+// Clean up expired rate limit entries every hour
+const CLEANUP_INTERVAL = 60 * 60 * 1000
+setInterval(() => {
+  const now = Date.now()
+  let removed = 0
+  for (const [ip, entry] of rateLimitMap) {
+    if (now - entry.dailyWindowStart > RATE_LIMIT_DAILY_WINDOW) {
+      rateLimitMap.delete(ip)
+      removed++
+    }
+  }
+  if (removed > 0) {
+    console.log(
+      `[RateLimit] Cleanup: removed ${removed} expired entries. Map size: ${rateLimitMap.size}`
+    )
+  }
+}, CLEANUP_INTERVAL).unref() // don't block server shutdown
 
 function getRateLimitInfo(ip: string) {
   const now = Date.now()
@@ -145,10 +161,13 @@ app.get('/', (c) => {
   })
 })
 
-app.get('/v1/rate-limit', (c) => {
+app.get('/v1/rate-limit', async (c) => {
   const connInfo = getConnInfo(c)
   const ip =
     c.req.header('x-forwarded-for')?.split(',')[0].trim() ?? connInfo.remote.address ?? 'unknown'
+
+  await metricsService.recordPageView(ip)
+
   const limitInfo = getRateLimitInfo(ip)
   return c.json({
     status: 'success',
@@ -190,9 +209,9 @@ app.post('/v1/scrape', async (c) => {
     }
 
     const body = await c.req.json().catch(() => ({}))
-    const { url } = body
+    const rawUrl = body.url
 
-    if (!url || typeof url !== 'string') {
+    if (!rawUrl || typeof rawUrl !== 'string') {
       const limitInfo = getRateLimitInfo(ip)
       return c.json(
         {
@@ -203,6 +222,8 @@ app.post('/v1/scrape', async (c) => {
         400
       )
     }
+
+    const url = rawUrl.trim()
 
     // Validate URL structure and security
     try {
@@ -315,7 +336,7 @@ const server = serve(
   }
 )
 
-// Graceful shutdown handlers to prevent EADDRINUSE errors on file changes/restarts
+// Graceful shutdown
 const shutdown = () => {
   console.log('\n[Server] Shutting down...')
   server.close()
