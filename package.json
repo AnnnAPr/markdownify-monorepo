@@ -9,8 +9,7 @@
   "scripts": {
     "frontend:dev": "npm --workspace=frontend run dev",
     "backend:dev": "npm --workspace=backend run dev",
-    "lint": "npm --workspace=frontend run lint",
-    "prepare": "husky"
+    "lint": "npm --workspace=frontend run lint"
   },
   "devDependencies": {
     "husky": "^9.1.7",
